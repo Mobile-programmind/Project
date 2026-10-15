@@ -1,1064 +1,1162 @@
-# 여행 일정 앱 API 명세서
+# 모아트립 데이터 연동 명세서
 
-## 1. 문서 목적
+- 문서 버전: v0.1
+- 문서 상태: 팀 검토용 초안
+- 작성일: 2026-10-15
+- 대상 플랫폼: Android
+- 기준 문서: 모아트립 팀프로젝트 계획서
 
-여행 일정 앱의 프론트엔드와 백엔드가 주고받는
-요청 및 응답 형식을 정의한다.
+## 1. 문서 목적 및 개발 범위
 
-현재 문서는 초안이며, 팀 협의를 통해 수정한다.
+### 1.1 문서 목적
 
-## 2. 이번에 구현할 기능
+본 문서는 모아트립 Android 앱에서 사용하는 데이터 구조,
+Firebase 연동 작업, 입력 검증, 접근 권한 및 동기화 규칙을 정의한다.
 
-1. 지도 공유 링크를 입력한다.
-2. 공유 링크에서 장소 목록을 추출한다.
-3. 사용자가 방문할 장소를 선택한다.
-4. 선택한 장소를 여행의 방문 후보로 저장한다.
-5. 장소별 방문 날짜와 순서를 지정한다.
-6. 일정을 저장하고 다시 조회한다.
+프론트엔드 화면 개발과 데이터 처리 구현 시 본 문서를 공통 기준으로 사용한다.
 
-## 3. 공통 규칙
+현재 설계는 별도 REST 서버 없이 Firebase를 사용하는 구조이다.
+따라서 본 문서에서는 HTTP API 주소 대신 데이터 경로와 처리 작업을 정의한다.
 
-- API 기본 경로: /api/v1
-- 요청 및 응답 형식: JSON
-- 날짜 형식: YYYY-MM-DD
-- 인증 방식: 미정
+### 1.2 서비스 개요
 
-## 4. API 목록
+모아트립은 장소 링크와 직접 입력한 장소를 여행별로 모으고,
+동행자와 날짜별 일정을 함께 편집하며,
+여행 후 사진과 한 줄 후기를 일정에 연결하는 앱이다.
 
-| 번호 | 기능 | Method | URL |
-|---|---|---|---|
-| 5.1 | 공유 링크 분석 요청 | POST | /api/v1/place-imports |
-| 5.2 | 공유 링크 분석 결과 조회 | GET | /api/v1/place-imports/{importId} |
-| 5.3 | 여행 생성 | POST | /api/v1/trips |
-| 5.4 | 방문 후보 저장 | POST | /api/v1/trips/{tripId}/candidates |
-| 5.5 | 방문 후보 조회 | GET | /api/v1/trips/{tripId}/candidates |
-| 5.6 | 일정 전체 저장 | PUT | /api/v1/trips/{tripId}/itinerary |
-| 5.7 | 일정 조회 | GET | /api/v1/trips/{tripId}/itinerary |
-| 5.8 | 일정 항목 메모 수정 | PATCH | /api/v1/trips/{tripId}/itinerary-items/{itemId} |
+### 1.3 필수 개발 범위
 
-## 5. API 상세 명세
+| 구분 | 기능 | 설명 |
+|---|---|---|
+| 사용자 | 로그인 및 로그아웃 | 사용자 식별 및 여행 접근 권한 관리 |
+| 여행 | 여행 생성·목록·상세·수정 | 여행 이름, 기간, 지역 관리 |
+| 참여 | 초대 코드 생성 및 여행 참여 | 동행자가 같은 여행에 참여 |
+| 장소 | 장소 등록·조회·수정·삭제 | 링크 또는 직접 입력으로 장소 보관 |
+| 일정 | 날짜·시간·순서 지정 및 수정 | 참여자가 공동으로 일정 편집 |
+| 기록 | 사진 및 한 줄 후기 등록·조회·수정·삭제 | 일정 항목에 여행 기록 연결 |
+| 공유 | 날짜별 일정 텍스트 공유 | 시스템 공유 기능으로 메신저에 전달 |
+| 로컬 저장 | 최근 여행 및 일정 캐시 | Room 기반 읽기용 캐시 |
 
-### 5.1 공유 링크 분석 요청
+### 1.4 선택 및 후속 기능
 
-사용자가 입력하거나 공유받은 지도 URL의 장소 정보를
-분석하는 작업을 생성한다.
+| 구분 | 기능 |
+|---|---|
+| 선택 | 좌표가 있는 장소의 지도 표시 |
+| 선택 | GIF 앨범 생성 |
+| 후속 | 여행지 추천 |
+| 후속 | AI 기반 장소 참고 정보 |
+| 후속 | 외부 공유 링크의 장소 정보 자동 추출 |
 
-- Method: POST
-- URL: /api/v1/place-imports
-- 인증 필요 여부: 미정
+### 1.5 장소 링크 처리 범위
 
-#### 요청 Body
+- 첫 버전은 원본 URL을 저장한다.
+- 사용자가 장소명을 직접 입력하거나 확인한다.
+- 공유 링크만으로 장소명, 주소, 좌표가 자동 입력된다고 가정하지 않는다.
+- 주소와 좌표는 없는 상태로 저장할 수 있다.
+- 좌표가 없는 장소는 원본 URL이 있으면 해당 링크를 열 수 있다.
+- 원본 URL도 없으면 앱에 저장된 장소 정보만 표시한다.
 
-```json
-{
-  "sourceUrl": "https://naver.me/예시링크"
-}
-```
+---
 
-| 필드 | 타입 | 필수 여부 | 설명 |
-|---|---|---|---|
-| sourceUrl | string | 필수 | 분석할 지도 공유 링크 |
+## 2. 기술 구성 및 공통 규칙
 
-#### 성공 응답
+### 2.1 기술 구성
 
-HTTP 상태: 202 Accepted
+| 영역 | 기술 | 역할 |
+|---|---|---|
+| Android 앱 | Kotlin | 화면 및 앱 기능 구현 |
+| 사용자 인증 | Firebase Authentication | 사용자 식별 |
+| 공동 데이터 | Cloud Firestore | 여행, 참여자, 장소, 일정, 기록 저장 |
+| 사진 파일 | Firebase Storage | 사진 파일 저장 |
+| 로컬 캐시 | Room | 최근 여행 및 일정의 읽기용 저장 |
+| URL 수신 | Android 공유 Intent | 다른 앱에서 공유한 링크 수신 |
+| 사진 선택 | Android Photo Picker | 사용자 사진 선택 |
+| 일정 공유 | Android 시스템 공유 | 일정 텍스트를 다른 앱에 전달 |
 
-```json
-{
-  "importId": "imp_001",
-  "status": "PENDING"
-}
-```
+화면 구현 방식은 XML 또는 Jetpack Compose 중 팀에서 확정한다.
+
+### 2.2 사용자 식별
+
+- 로그인한 사용자는 Firebase Authentication의 uid로 식별한다.
+- uid를 사용자 ID로 사용한다.
+- 로그인 제공 방식은 팀에서 확정한다.
+- 로그인하지 않은 사용자는 여행 데이터에 접근할 수 없다.
+- 사용자 ID를 요청에 넣었다는 이유만으로 권한을 인정하지 않는다.
+- 실제 인증된 uid와 여행 참여 정보를 기준으로 접근을 허용한다.
+
+### 2.3 필드 이름 및 값 형식
+
+| 항목 | 규칙 |
+|---|---|
+| 필드 이름 | camelCase |
+| 문서 ID | 문자열 |
+| 날짜 | YYYY-MM-DD |
+| 방문 시간 | HH:mm, 24시간제 |
+| 생성·수정 시각 | Firestore Timestamp |
+| 표시용 시각 예시 | ISO 8601 문자열 |
+| 위도 | -90 이상 90 이하 |
+| 경도 | -180 이상 180 이하 |
+| 조회 결과 없음 | 빈 목록 |
+| 선택값 없음 | 명세에 따라 null 허용 |
+
+### 2.4 날짜 및 시간 기준
+
+- 현재 MVP의 여행 날짜와 방문 시간은 한국 시간대를 기준으로 한다.
+- 여행의 timeZone은 Asia/Seoul로 저장한다.
+- 해외 여행 및 복수 시간대 지원은 후속 검토한다.
+- createdAt과 updatedAt은 서버 기준 시각을 사용한다.
+- 문서 예시의 시각 문자열은 설명용이며 실제 저장 타입은 Timestamp이다.
+
+### 2.5 초안의 입력 제한
+
+아래 제한은 구현을 위한 제안값이며 팀 검토 후 확정한다.
+
+| 항목 | 제안 제한 |
+|---|---|
+| 여행 이름 | 앞뒤 공백 제거 후 1~50자 |
+| 여행 지역 | 앞뒤 공백 제거 후 1~100자 |
+| 장소명 | 앞뒤 공백 제거 후 1~100자 |
+| 주소 | 최대 300자 |
+| 원본 URL | 최대 2,048자 |
+| 장소 메모 | 최대 500자 |
+| 일정 메모 | 최대 500자 |
+| 한 줄 후기 | 최대 200자 |
+
+### 2.6 공통 입력 검증
+
+- 필수 문자열은 빈 문자열이나 공백만으로 저장할 수 없다.
+- 날짜는 실제 존재하는 날짜여야 한다.
+- 여행 종료일은 시작일과 같거나 이후여야 한다.
+- 방문 날짜는 여행 기간 안에 있어야 한다.
+- URL은 http 또는 https 형식만 허용한다.
+- URL 형식이 유효해도 실제 접근 가능 여부는 보장하지 않는다.
+- 위도와 경도는 함께 입력하거나 함께 null로 저장한다.
+- 좌표가 없다는 이유만으로 장소 등록을 막지 않는다.
+- 앱 화면 검증과 별개로 보안 규칙 또는 신뢰할 수 있는 처리 계층에서 검증한다.
+
+### 2.7 공통 관리 필드
+
+변경 가능한 주요 문서에는 다음 필드를 사용한다.
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| importId | string | 분석 작업을 구분하는 ID |
-| status | string | 현재 분석 상태 |
+| createdBy | string | 최초 생성자 uid |
+| createdAt | Timestamp | 최초 생성 시각 |
+| updatedBy | string | 마지막 수정자 uid |
+| updatedAt | Timestamp | 마지막 수정 시각 |
+| version | integer | 동시 수정 충돌 확인용 버전 |
 
-#### 분석 상태
+- version은 최초 저장 시 1이다.
+- 수정 성공 시 version을 1 증가시킨다.
+- createdBy와 createdAt은 일반 수정으로 변경하지 않는다.
+- 작성자 및 수정자 값은 인증된 사용자와 일치해야 한다.
 
-| 값 | 의미 |
-|---|---|
-| PENDING | 분석 대기 |
-| PROCESSING | 분석 중 |
-| COMPLETED | 분석 완료 |
-| FAILED | 분석 실패 |
+---
 
-#### 오류 응답
+## 3. 데이터 구조 및 저장 경로
 
-지원하지 않는 링크를 입력하면 아래와 같이 응답한다.
+### 3.1 Firestore 경로
 
-HTTP 상태: 400 Bad Request
+```text
+users/{uid}
 
-```json
-{
-  "error": {
-    "code": "UNSUPPORTED_SHARE_URL",
-    "message": "지원하지 않는 지도 공유 링크입니다."
-  }
-}
+trips/{tripId}
+  members/{uid}
+  places/{placeId}
+  scheduleItems/{itemId}
+    memories/{memoryId}
+
+invitations/{invitationId}
 ```
 
-#### 처리 규칙
+- 문서 ID는 각 데이터를 구분하는 식별자이다.
+- 문서 예시의 tripId, placeId 등은 문서 ID를 표시한 것이다.
+- Android 데이터 모델에서는 문서 ID를 별도 속성으로 보관할 수 있다.
+- 같은 ID를 문서 필드에도 중복 저장할지는 구현 시 통일한다.
 
-- sourceUrl은 필수 입력값이다.
-- 지원할 지도 서비스와 링크 유형은 검증 후 확정한다.
-- 장소 분석 결과는 분석 결과 조회 API에서 확인한다.
+### 3.2 User
 
+저장 경로:
 
-### 5.2 공유 링크 분석 결과 조회
+```text
+users/{uid}
+```
 
-공유 링크 분석 작업의 진행 상태를 확인한다.
-분석이 완료되면 추출된 장소 목록을 반환한다.
-
-- Method: GET
-- URL: /api/v1/place-imports/{importId}
-- 인증 필요 여부: 미정
-
-#### Path Parameter
-
-| 필드 | 타입 | 필수 여부 | 설명 |
+| 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
-| importId | string | 필수 | 공유 링크 분석 요청 시 받은 작업 ID |
+| displayName | string | O | 앱에 표시할 사용자 이름 |
+| createdAt | Timestamp | O | 최초 등록 시각 |
+| updatedAt | Timestamp | O | 프로필 수정 시각 |
 
-#### 요청 예시
+이메일 등 추가 개인정보는 필요한 경우에만 저장한다.
 
-GET /api/v1/place-imports/imp_001
+### 3.3 Trip
 
-- 요청 Body는 없다.
+저장 경로:
 
-#### 성공 응답 — 분석 진행 중
-
-HTTP 상태: 200 OK
-
-```json
-{
-  "importId": "imp_001",
-  "status": "PROCESSING",
-  "places": [],
-  "error": null
-}
+```text
+trips/{tripId}
 ```
 
-#### 성공 응답 — 분석 완료
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| title | string | O | 여행 이름 |
+| region | string | O | 여행 지역 |
+| startDate | string | O | 여행 시작일 |
+| endDate | string | O | 여행 종료일 |
+| timeZone | string | O | MVP는 Asia/Seoul |
+| ownerId | string | O | 여행 생성자 uid |
+| memberIds | array of string | O | 현재 참여자 uid 목록 |
+| itineraryVersion | integer | O | 일정 구성 전체의 변경 버전 |
+| createdBy | string | O | 생성자 uid |
+| createdAt | Timestamp | O | 생성 시각 |
+| updatedBy | string | O | 마지막 수정자 uid |
+| updatedAt | Timestamp | O | 수정 시각 |
+| version | integer | O | 여행 문서 변경 버전 |
 
-HTTP 상태: 200 OK
+memberIds는 내 여행 목록 조회 및 접근 판단을 위한 값이다.
+members 하위 문서와 항상 일치하도록 관리한다.
 
-아래 장소와 좌표는 응답 구조를 설명하기 위한 가상 데이터이다.
+일반 여행 정보 수정으로 ownerId와 memberIds를 변경할 수 없다.
 
-```json
-{
-  "importId": "imp_001",
-  "status": "COMPLETED",
-  "places": [
-    {
-      "importPlaceId": "ip_001",
-      "provider": "NAVER",
-      "providerPlaceId": "example_001",
-      "name": "예시 카페",
-      "address": "서울특별시 예시 주소 1",
-      "latitude": 37.5,
-      "longitude": 127.0,
-      "validationStatus": "VALID",
-      "duplicateOf": null
-    },
-    {
-      "importPlaceId": "ip_002",
-      "provider": "NAVER",
-      "providerPlaceId": "example_002",
-      "name": "예시 전시관",
-      "address": "서울특별시 예시 주소 2",
-      "latitude": null,
-      "longitude": null,
-      "validationStatus": "NEEDS_REVIEW",
-      "duplicateOf": null
-    }
-  ],
-  "error": null
-}
+### 3.4 Member
+
+저장 경로:
+
+```text
+trips/{tripId}/members/{uid}
 ```
 
-#### 응답 필드
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| role | string | O | OWNER 또는 MEMBER |
+| displayName | string | O | 참여 시점의 표시 이름 |
+| joinedAt | Timestamp | O | 참여 시각 |
+
+- OWNER는 여행 생성자이다.
+- MEMBER는 초대 코드로 참여한 사용자이다.
+- 여행 생성 시 OWNER 참여 문서를 함께 생성한다.
+- 현재 MVP에서 여행 이름·기간·지역 수정은 OWNER만 가능하다.
+- 장소 및 일정 편집은 OWNER와 MEMBER 모두 가능하다.
+- 여행 기록 수정·삭제는 작성자 또는 OWNER만 가능하다.
+- 소유권 이전, 강제 퇴장, 여행 탈퇴는 후속 설계 대상으로 둔다.
+
+### 3.5 Place
+
+저장 경로:
+
+```text
+trips/{tripId}/places/{placeId}
+```
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| name | string | O | 장소명 |
+| address | string 또는 null | O | 주소 |
+| sourceUrl | string 또는 null | O | 원본 장소 링크 |
+| latitude | number 또는 null | O | 위도 |
+| longitude | number 또는 null | O | 경도 |
+| memo | string | O | 장소 메모 |
+| sourceType | string | O | LINK 또는 MANUAL |
+| scheduledItemId | string 또는 null | O | 현재 연결된 일정 항목 ID |
+| createdBy | string | O | 등록자 uid |
+| createdAt | Timestamp | O | 등록 시각 |
+| updatedBy | string | O | 마지막 수정자 uid |
+| updatedAt | Timestamp | O | 수정 시각 |
+| version | integer | O | 장소 변경 버전 |
+
+- LINK는 원본 URL을 함께 등록한 장소이다.
+- MANUAL은 원본 URL 없이 직접 입력한 장소이다.
+- 장소 등록 직후 scheduledItemId는 null이다.
+- 현재 초안에서는 한 장소를 일정에 한 번만 배치한다.
+- 장소명이 같아도 자동으로 동일 장소로 병합하지 않는다.
+
+### 3.6 ScheduleItem
+
+저장 경로:
+
+```text
+trips/{tripId}/scheduleItems/{itemId}
+```
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| placeId | string | O | 같은 여행에 속한 장소 ID |
+| visitDate | string | O | 방문 날짜 |
+| visitTime | string 또는 null | O | 방문 시간 |
+| visitOrder | integer | O | 같은 날짜 안에서의 방문 순서 |
+| memo | string | O | 일정 메모 |
+| memoryCount | integer | O | 연결된 여행 기록 수 |
+| createdBy | string | O | 생성자 uid |
+| createdAt | Timestamp | O | 생성 시각 |
+| updatedBy | string | O | 마지막 수정자 uid |
+| updatedAt | Timestamp | O | 수정 시각 |
+| version | integer | O | 일정 항목 변경 버전 |
+
+- 장소 정보는 placeId로 연결한다.
+- 일정 표시 시 Place의 장소명, 주소, 좌표를 함께 조회한다.
+- 일정 표시 순서는 visitDate, visitOrder 기준이다.
+- visitTime은 선택값이며 자동으로 방문 순서를 변경하지 않는다.
+- memoryCount는 기록 생성·삭제 시 함께 변경한다.
+
+### 3.7 Memory
+
+저장 경로:
+
+```text
+trips/{tripId}/scheduleItems/{itemId}/memories/{memoryId}
+```
+
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| review | string | O | 한 줄 후기. 사진만 있으면 빈 문자열 허용 |
+| photos | array of object | O | 사진 정보 목록 |
+| createdBy | string | O | 작성자 uid |
+| createdAt | Timestamp | O | 작성 시각 |
+| updatedBy | string | O | 마지막 수정자 uid |
+| updatedAt | Timestamp | O | 수정 시각 |
+| version | integer | O | 기록 변경 버전 |
+
+photos 항목:
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| importId | string | 분석 작업 ID |
-| status | string | 분석 작업의 현재 상태 |
-| places | array | 추출된 장소 목록 |
-| error | object 또는 null | 분석 실패 시 오류 정보 |
+| photoId | string | 사진 식별자 |
+| storagePath | string | Firebase Storage 파일 경로 |
+| contentType | string | 이미지 MIME 유형 |
+| sizeBytes | integer | 업로드된 파일 크기 |
+| order | integer | 기록 안에서의 표시 순서 |
 
-#### places 항목의 필드
+사진 파일 자체를 Firestore 문서에 저장하지 않는다.
 
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| importPlaceId | string | 추출 결과 안에서 장소를 구분하는 ID |
-| provider | string | 장소 정보 출처. 현재 초안은 NAVER |
-| providerPlaceId | string 또는 null | 지도 서비스에서 사용하는 장소 ID |
-| name | string | 장소명 |
-| address | string 또는 null | 장소 주소 |
-| latitude | number 또는 null | 위도 |
-| longitude | number 또는 null | 경도 |
-| validationStatus | string | 장소 정보 검증 상태 |
-| duplicateOf | string 또는 null | 중복된 원본 장소의 importPlaceId |
+### 3.8 Invitation
 
-#### 분석 상태
+저장 경로:
 
-| 값 | 의미 |
-|---|---|
-| PENDING | 분석 대기 |
-| PROCESSING | 분석 중 |
-| COMPLETED | 분석 완료 |
-| FAILED | 분석 실패 |
+```text
+invitations/{invitationId}
+```
 
-#### 장소 정보 검증 상태
+| 필드 | 타입 | 필수 | 설명 |
+|---|---|---|---|
+| tripId | string | O | 참여할 여행 ID |
+| codeHash | string | O | 초대 코드 검증용 값 |
+| active | boolean | O | 사용 가능 여부 |
+| expiresAt | Timestamp | O | 만료 시각 |
+| createdBy | string | O | 생성자 uid |
+| createdAt | Timestamp | O | 생성 시각 |
 
-| 값 | 의미 |
-|---|---|
-| VALID | 장소명, 주소, 좌표가 있어 선택 가능한 상태 |
-| NEEDS_REVIEW | 필수 정보가 누락되어 확인이 필요한 상태 |
-| DUPLICATE | 같은 분석 결과 안에서 중복된 장소 |
+- 초대 코드 원문을 일반 조회 가능한 문서로 공개하지 않는다.
+- 초대 검증용 데이터는 일반 사용자가 직접 조회할 수 없도록 한다.
+- 초대 생성·참여는 검증된 처리 계층을 통해 수행한다.
+- 구체적인 처리 계층은 8번 미확정 사항에서 확정한다.
 
-#### 분석 작업 실패 응답
+### 3.9 Firebase Storage 경로
 
-결과 조회는 성공했지만 링크 분석 작업이 실패한 경우이다.
+```text
+trips/{tripId}/items/{itemId}/memories/{memoryId}/{photoId}
+```
 
-HTTP 상태: 200 OK
+사진은 해당 여행 참여자만 접근할 수 있어야 한다.
+파일 경로만 알고 있다는 이유로 접근을 허용하지 않는다.
+
+---
+
+## 4. 사용자 및 여행 연동
+
+### 4.1 로그인
+
+입력:
+
+- 팀에서 선택한 로그인 제공 방식의 인증 정보
+
+처리:
+
+1. Firebase Authentication으로 인증한다.
+2. 인증된 uid를 확보한다.
+3. 최초 로그인이라면 users/{uid}를 생성한다.
+4. 로그인 성공 후 내 여행 목록으로 이동한다.
+
+결과:
 
 ```json
 {
-  "importId": "imp_001",
-  "status": "FAILED",
-  "places": [],
-  "error": {
-    "code": "SHARE_LINK_UNAVAILABLE",
-    "message": "공유 링크에 접근할 수 없습니다."
-  }
+  "uid": "user_001",
+  "displayName": "사용자 A"
 }
 ```
 
-#### 존재하지 않는 작업 조회
+규칙:
 
-HTTP 상태: 404 Not Found
+- 비밀번호를 Firestore에 직접 저장하지 않는다.
+- 로그인 취소와 로그인 실패를 구분한다.
+- 사용자 표시 이름의 등록 방식은 팀에서 확정한다.
 
-```json
-{
-  "error": {
-    "code": "IMPORT_NOT_FOUND",
-    "message": "분석 작업을 찾을 수 없습니다."
-  }
-}
-```
+### 4.2 로그아웃
 
-#### 처리 규칙
+처리:
 
-- PENDING 또는 PROCESSING 상태에서는 places를 빈 배열로 반환한다.
-- COMPLETED 상태에서는 추출된 장소 목록을 반환한다.
-- 분석이 완료되었지만 장소가 없으면 places를 빈 배열로 반환한다.
-- FAILED 상태에서는 places를 빈 배열로 반환하고 error에 실패 이유를 제공한다.
-- 분석 실패가 아니면 error는 null로 반환한다.
-- 주소나 좌표를 확인하지 못하면 해당 필드는 null로 반환한다.
-- 장소 정보가 일부 누락되어도 다른 장소의 추출 결과는 제공한다.
-- 동일한 provider와 providerPlaceId가 있으면 중복으로 판별한다.
-- providerPlaceId가 없는 장소의 중복 판별 기준은 추후 확정한다.
-- 장소명이 같다는 이유만으로 중복 처리하지 않는다.
-- DUPLICATE 상태에서는 duplicateOf에 원본 장소의 importPlaceId를 반환한다.
-- 현재 초안에서는 VALID 상태인 장소만 선택할 수 있다.
-- 앱은 PENDING 또는 PROCESSING 상태에서 로딩 화면을 표시한다.
-- 앱은 COMPLETED 상태에서 장소 선택 목록 또는 빈 결과 안내를 표시한다.
-- 앱은 FAILED 상태에서 실패 이유와 다시 시도할 수 있는 화면을 표시한다.
+1. 현재 화면의 데이터 구독을 종료한다.
+2. 인증 세션을 로그아웃한다.
+3. 현재 사용자용 화면 상태를 비운다.
+4. 로그아웃한 사용자의 로컬 캐시를 제거한다.
+5. 로그인 화면으로 이동한다.
 
-### 5.3 여행 생성
+### 4.3 여행 생성
 
-여행 제목과 시작일, 종료일을 입력받아 새로운 여행을 생성한다.
-생성한 여행의 ID는 방문 후보 및 일정 저장에 사용한다.
-
-- Method: POST
-- URL: /api/v1/trips
-- 인증 필요 여부: 미정
-
-#### 요청 Body
+입력 예시:
 
 ```json
 {
   "title": "서울 여행",
+  "region": "서울",
   "startDate": "2026-10-20",
   "endDate": "2026-10-22"
 }
 ```
 
-#### 요청 필드
+처리:
 
-| 필드 | 타입 | 필수 여부 | 설명 |
-|---|---|---|---|
-| title | string | 필수 | 여행 제목 |
-| startDate | string | 필수 | 여행 시작일. YYYY-MM-DD 형식 |
-| endDate | string | 필수 | 여행 종료일. YYYY-MM-DD 형식 |
+- trips/{tripId}를 생성한다.
+- ownerId는 현재 인증된 uid로 지정한다.
+- memberIds에는 생성자 uid를 넣는다.
+- timeZone은 Asia/Seoul로 저장한다.
+- version은 1로 저장한다.
+- itineraryVersion은 0으로 저장한다.
+- members/{uid}에 OWNER 문서를 생성한다.
+- 여행 문서와 OWNER 참여 문서는 하나의 원자적 작업으로 생성한다.
 
-#### 성공 응답
-
-HTTP 상태: 201 Created
+결과 예시:
 
 ```json
 {
   "tripId": "trip_001",
   "title": "서울 여행",
-  "startDate": "2026-10-20",
-  "endDate": "2026-10-22"
-}
-```
-
-#### 응답 필드
-
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| tripId | string | 생성된 여행을 구분하는 ID |
-| title | string | 저장된 여행 제목 |
-| startDate | string | 여행 시작일 |
-| endDate | string | 여행 종료일 |
-
-#### 오류 응답 — 여행 제목 누락
-
-HTTP 상태: 400 Bad Request
-
-```json
-{
-  "error": {
-    "code": "INVALID_REQUEST",
-    "message": "여행 제목을 입력해 주세요.",
-    "field": "title"
-  }
-}
-```
-
-#### 오류 응답 — 잘못된 날짜 형식
-
-HTTP 상태: 400 Bad Request
-
-```json
-{
-  "error": {
-    "code": "INVALID_DATE_FORMAT",
-    "message": "날짜는 YYYY-MM-DD 형식의 유효한 날짜여야 합니다.",
-    "field": "startDate"
-  }
-}
-```
-
-#### 오류 응답 — 잘못된 여행 기간
-
-HTTP 상태: 400 Bad Request
-
-```json
-{
-  "error": {
-    "code": "INVALID_TRIP_DATE_RANGE",
-    "message": "여행 종료일은 시작일보다 빠를 수 없습니다.",
-    "field": "endDate"
-  }
-}
-```
-
-#### 처리 규칙
-
-- title, startDate, endDate는 필수 입력값이다.
-- 여행 제목은 앞뒤 공백을 제거한 후 저장한다.
-- 여행 제목이 빈 문자열이거나 공백만 있으면 저장하지 않는다.
-- 날짜는 YYYY-MM-DD 형식이어야 하며 실제 존재하는 날짜여야 한다.
-- 종료일은 시작일과 같거나 이후여야 한다.
-- 시작일과 종료일이 같은 당일 여행을 허용한다.
-- tripId는 서버에서 생성하며 앱에서 지정하지 않는다.
-- 여행 생성 시 방문 후보와 일정 항목은 비어 있는 상태이다.
-- 이후 일정에 지정하는 방문 날짜는 여행 시작일과 종료일 범위 안에 있어야 한다.
-- 로그인 및 여행 소유자 연결 방식은 인증 설계 후 확정한다.
-
-### 5.4 방문 후보 저장
-
-공유 링크에서 추출한 장소 중 사용자가 선택한 장소를
-해당 여행의 방문 후보로 저장한다.
-
-- Method: POST
-- URL: /api/v1/trips/{tripId}/candidates
-- 인증 필요 여부: 미정
-
-#### Path Parameter
-
-| 필드 | 타입 | 필수 여부 | 설명 |
-|---|---|---|---|
-| tripId | string | 필수 | 장소를 담을 여행 ID |
-
-#### 요청 Body
-
-```json
-{
-  "importId": "imp_001",
-  "importPlaceIds": [
-    "ip_001",
-    "ip_003"
-  ]
-}
-```
-
-#### 요청 필드
-
-| 필드 | 타입 | 필수 여부 | 설명 |
-|---|---|---|---|
-| importId | string | 필수 | 장소를 추출한 분석 작업 ID |
-| importPlaceIds | array of string | 필수 | 사용자가 선택한 추출 장소 ID 목록 |
-
-#### 성공 응답
-
-HTTP 상태: 200 OK
-
-```json
-{
-  "tripId": "trip_001",
-  "candidates": [
-    {
-      "candidateId": "cand_001",
-      "placeId": "place_001",
-      "name": "예시 카페",
-      "address": "서울특별시 예시 주소 1",
-      "latitude": 37.5,
-      "longitude": 127.0,
-      "added": true
-    },
-    {
-      "candidateId": "cand_002",
-      "placeId": "place_003",
-      "name": "예시 공원",
-      "address": "서울특별시 예시 주소 3",
-      "latitude": 37.51,
-      "longitude": 127.01,
-      "added": true
-    }
-  ]
-}
-```
-
-#### 응답 필드
-
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| tripId | string | 방문 후보가 저장된 여행 ID |
-| candidates | array | 이번 요청으로 추가되었거나 기존에 저장되어 있던 후보 목록 |
-| candidates[].candidateId | string | 여행 안에서 방문 후보를 구분하는 ID |
-| candidates[].placeId | string | 서버에서 장소 자체를 구분하는 ID |
-| candidates[].name | string | 장소명 |
-| candidates[].address | string | 주소 |
-| candidates[].latitude | number | 위도 |
-| candidates[].longitude | number | 경도 |
-| candidates[].added | boolean | 이번 요청으로 새로 저장했으면 true, 기존 후보면 false |
-
-#### 오류 응답 — 선택한 장소 없음
-
-HTTP 상태: 400 Bad Request
-
-```json
-{
-  "error": {
-    "code": "EMPTY_PLACE_SELECTION",
-    "message": "방문할 장소를 한 개 이상 선택해 주세요.",
-    "field": "importPlaceIds"
-  }
-}
-```
-
-#### 오류 응답 — 분석 미완료
-
-HTTP 상태: 409 Conflict
-
-```json
-{
-  "error": {
-    "code": "IMPORT_NOT_COMPLETED",
-    "message": "장소 분석이 완료된 후 다시 시도해 주세요.",
-    "field": "importId"
-  }
-}
-```
-
-#### 오류 응답 — 선택할 수 없는 장소
-
-HTTP 상태: 422 Unprocessable Content
-
-```json
-{
-  "error": {
-    "code": "PLACE_NOT_SELECTABLE",
-    "message": "정보 확인이 필요한 장소가 포함되어 있습니다.",
-    "field": "importPlaceIds"
-  }
-}
-```
-
-#### 처리 규칙
-
-- 여행과 분석 작업이 존재해야 한다.
-- 분석 작업의 상태가 COMPLETED여야 한다.
-- importPlaceIds에는 최소 한 개의 ID가 있어야 한다.
-- 선택한 모든 장소는 요청한 importId의 분석 결과에 속해야 한다.
-- validationStatus가 VALID인 장소만 저장할 수 있다.
-- 요청 목록에 동일한 importPlaceId가 여러 번 있으면 한 번만 처리한다.
-- 동일한 장소가 이미 해당 여행의 후보로 저장되어 있으면 기존 candidateId를 반환한다.
-- 기존 후보를 반환한 경우 added는 false이다.
-- 새 후보를 저장한 경우 added는 true이다.
-- 장소 중복 여부는 서버가 식별한 동일한 placeId를 기준으로 한다.
-- 서로 다른 분석 결과의 장소를 같은 placeId로 연결하는 기준은 중복 판별 설계에서 확정한다.
-- 선택한 항목 중 하나라도 유효하지 않으면 이번 요청의 전체 저장을 취소한다.
-- 후보를 저장하는 단계에서는 방문 날짜와 순서를 지정하지 않는다.
-
-### 5.5 방문 후보 조회
-
-해당 여행에 저장된 방문 후보 목록을 조회한다.
-
-- Method: GET
-- URL: /api/v1/trips/{tripId}/candidates
-- 인증 필요 여부: 미정
-
-#### Path Parameter
-
-| 필드 | 타입 | 필수 여부 | 설명 |
-|---|---|---|---|
-| tripId | string | 필수 | 조회할 여행 ID |
-
-#### 요청 예시
-
-GET /api/v1/trips/trip_001/candidates
-
-- 요청 Body는 없다.
-
-#### 성공 응답
-
-HTTP 상태: 200 OK
-
-```json
-{
-  "tripId": "trip_001",
-  "candidates": [
-    {
-      "candidateId": "cand_001",
-      "placeId": "place_001",
-      "name": "예시 카페",
-      "address": "서울특별시 예시 주소 1",
-      "latitude": 37.5,
-      "longitude": 127.0,
-      "scheduled": false
-    },
-    {
-      "candidateId": "cand_002",
-      "placeId": "place_003",
-      "name": "예시 공원",
-      "address": "서울특별시 예시 주소 3",
-      "latitude": 37.51,
-      "longitude": 127.01,
-      "scheduled": true
-    }
-  ]
-}
-```
-
-#### 응답 필드
-
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| tripId | string | 여행 ID |
-| candidates | array | 저장된 방문 후보 목록 |
-| candidates[].candidateId | string | 방문 후보 ID |
-| candidates[].placeId | string | 장소 ID |
-| candidates[].name | string | 장소명 |
-| candidates[].address | string | 주소 |
-| candidates[].latitude | number | 위도 |
-| candidates[].longitude | number | 경도 |
-| candidates[].scheduled | boolean | 현재 일정에 포함되어 있으면 true |
-
-#### 처리 규칙
-
-- 후보 목록은 저장된 순서대로 반환한다.
-- 후보가 없으면 candidates를 빈 배열로 반환한다.
-- 후보가 없는 경우도 정상 조회이므로 200 OK를 반환한다.
-- scheduled는 현재 저장된 일정 포함 여부를 기준으로 계산한다.
-- 여행이 존재하지 않으면 TRIP_NOT_FOUND 오류를 반환한다.
-
-### 5.6 일정 전체 저장
-
-방문 후보에 날짜와 방문 순서를 지정하여
-해당 여행의 전체 일정을 저장한다.
-
-- Method: PUT
-- URL: /api/v1/trips/{tripId}/itinerary
-- 인증 필요 여부: 미정
-
-#### Path Parameter
-
-| 필드 | 타입 | 필수 여부 | 설명 |
-|---|---|---|---|
-| tripId | string | 필수 | 일정을 저장할 여행 ID |
-
-#### 요청 Body
-
-```json
-{
-  "items": [
-    {
-      "candidateId": "cand_001",
-      "visitDate": "2026-10-20",
-      "visitOrder": 1,
-      "memo": "오전에 방문"
-    },
-    {
-      "candidateId": "cand_002",
-      "visitDate": "2026-10-20",
-      "visitOrder": 2,
-      "memo": ""
-    }
-  ]
-}
-```
-
-#### 요청 필드
-
-| 필드 | 타입 | 필수 여부 | 설명 |
-|---|---|---|---|
-| items | array | 필수 | 저장할 전체 일정 목록 |
-| items[].candidateId | string | 필수 | 여행에 저장된 방문 후보 ID |
-| items[].visitDate | string | 필수 | 방문 날짜. YYYY-MM-DD 형식 |
-| items[].visitOrder | integer | 필수 | 같은 날짜 안에서의 방문 순서 |
-| items[].memo | string | 선택 | 사용자 메모. 생략 시 빈 문자열로 저장 |
-
-#### 성공 응답
-
-HTTP 상태: 200 OK
-
-```json
-{
-  "tripId": "trip_001",
-  "items": [
-    {
-      "itemId": "item_001",
-      "candidateId": "cand_001",
-      "visitDate": "2026-10-20",
-      "visitOrder": 1,
-      "memo": "오전에 방문"
-    },
-    {
-      "itemId": "item_002",
-      "candidateId": "cand_002",
-      "visitDate": "2026-10-20",
-      "visitOrder": 2,
-      "memo": ""
-    }
-  ]
-}
-```
-
-#### 응답 필드
-
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| tripId | string | 여행 ID |
-| items | array | 저장된 전체 일정 |
-| items[].itemId | string | 일정 항목 ID |
-| items[].candidateId | string | 방문 후보 ID |
-| items[].visitDate | string | 방문 날짜 |
-| items[].visitOrder | integer | 해당 날짜의 방문 순서 |
-| items[].memo | string | 사용자 메모 |
-
-#### 오류 응답 — 여행 기간을 벗어난 날짜
-
-HTTP 상태: 422 Unprocessable Content
-
-```json
-{
-  "error": {
-    "code": "VISIT_DATE_OUT_OF_RANGE",
-    "message": "방문 날짜는 여행 기간 안에 있어야 합니다.",
-    "field": "items[0].visitDate"
-  }
-}
-```
-
-#### 오류 응답 — 중복된 방문 순서
-
-HTTP 상태: 409 Conflict
-
-```json
-{
-  "error": {
-    "code": "DUPLICATE_VISIT_ORDER",
-    "message": "같은 날짜에 동일한 방문 순서를 지정할 수 없습니다.",
-    "field": "items"
-  }
-}
-```
-
-#### 오류 응답 — 잘못된 방문 순서
-
-HTTP 상태: 422 Unprocessable Content
-
-```json
-{
-  "error": {
-    "code": "INVALID_VISIT_ORDER",
-    "message": "방문 순서는 날짜별로 1부터 연속되어야 합니다.",
-    "field": "items"
-  }
-}
-```
-
-#### 처리 규칙
-
-- 요청한 items 목록으로 해당 여행의 전체 일정을 교체한다.
-- items 필드를 생략하거나 null로 보내면 오류를 반환한다.
-- items를 빈 배열로 보내면 전체 일정을 비운다.
-- 기존 일정에서 빠진 항목은 삭제한다.
-- 일정 항목이 삭제되어도 방문 후보는 유지한다.
-- candidateId는 해당 여행에 속한 방문 후보여야 한다.
-- 현재 초안에서는 같은 candidateId를 전체 일정에 한 번만 사용할 수 있다.
-- visitDate는 여행 시작일과 종료일을 포함한 범위 안에 있어야 한다.
-- visitOrder는 날짜별로 1부터 연속되어야 한다.
-- 같은 날짜에 동일한 visitOrder를 사용할 수 없다.
-- memo는 문자열이며 null은 허용하지 않는다.
-- 기존 일정에 있던 candidateId는 itemId를 유지한다.
-- 새로 일정에 포함된 candidateId에는 새로운 itemId를 생성한다.
-- 항목 중 하나라도 검증에 실패하면 전체 변경을 저장하지 않는다.
-- 응답은 visitDate 오름차순, visitOrder 오름차순으로 반환한다.
-- AI 팁 생성 여부와 관계없이 일정 저장은 완료할 수 있어야 한다.
-
-### 5.7 일정 조회
-
-해당 여행의 일정과 장소 정보를 조회한다.
-앱은 응답 데이터를 이용하여 일정 카드와 지도 마커를 표시한다.
-
-- Method: GET
-- URL: /api/v1/trips/{tripId}/itinerary
-- 인증 필요 여부: 미정
-
-#### Path Parameter
-
-| 필드 | 타입 | 필수 여부 | 설명 |
-|---|---|---|---|
-| tripId | string | 필수 | 조회할 여행 ID |
-
-#### 요청 예시
-
-GET /api/v1/trips/trip_001/itinerary
-
-- 요청 Body는 없다.
-
-#### 성공 응답
-
-HTTP 상태: 200 OK
-
-아래 장소와 좌표는 응답 구조를 설명하기 위한 가상 데이터이다.
-
-```json
-{
-  "tripId": "trip_001",
-  "title": "서울 여행",
+  "region": "서울",
   "startDate": "2026-10-20",
   "endDate": "2026-10-22",
+  "timeZone": "Asia/Seoul",
+  "ownerId": "user_001",
+  "memberIds": ["user_001"],
+  "version": 1,
+  "itineraryVersion": 0
+}
+```
+
+### 4.4 내 여행 목록 조회
+
+조회 조건:
+
+- memberIds에 현재 인증된 uid가 포함된 여행
+
+표시 정보:
+
+- 여행 ID
+- 여행 이름
+- 지역
+- 시작일
+- 종료일
+- 참여자 수
+
+규칙:
+
+- 최근 수정된 여행부터 표시한다.
+- 참여한 여행이 없으면 빈 목록을 표시한다.
+- 참여하지 않은 여행을 전체 조회하지 않는다.
+- 필요한 Firestore 인덱스는 구현 시 설정한다.
+
+### 4.5 여행 상세 조회
+
+입력:
+
+```json
+{
+  "tripId": "trip_001"
+}
+```
+
+결과:
+
+- 여행 기본 정보
+- 현재 사용자 역할
+- 참여자 목록
+- 일정 조회에 필요한 itineraryVersion
+
+규칙:
+
+- 여행 참여자만 조회할 수 있다.
+- 여행이 없거나 접근 권한이 없으면 적절한 오류를 표시한다.
+
+### 4.6 여행 정보 수정
+
+권한:
+
+- OWNER만 가능
+
+입력 예시:
+
+```json
+{
+  "tripId": "trip_001",
+  "expectedVersion": 1,
+  "title": "서울 친구 여행",
+  "region": "서울",
+  "startDate": "2026-10-20",
+  "endDate": "2026-10-23"
+}
+```
+
+규칙:
+
+- expectedVersion이 현재 version과 같아야 한다.
+- 수정 성공 시 version을 1 증가시킨다.
+- ownerId, memberIds는 이 작업으로 변경할 수 없다.
+- 기간 변경 후 기존 일정이 여행 기간 밖으로 나가면 변경을 거절한다.
+- 기간과 일정 검증 중 충돌이 발생하면 최신 데이터를 다시 확인한다.
+- 기간 변경에 따른 일정 자동 삭제는 수행하지 않는다.
+
+---
+
+## 5. 초대 및 참여자 연동
+
+### 5.1 초대 코드 생성
+
+권한:
+
+- OWNER만 가능
+
+입력:
+
+```json
+{
+  "tripId": "trip_001"
+}
+```
+
+결과 예시:
+
+```json
+{
+  "invitationId": "invite_001",
+  "code": "예시초대코드",
+  "expiresAt": "2026-10-16T12:00:00+09:00"
+}
+```
+
+규칙:
+
+- 초대 코드는 추측하기 어렵게 생성한다.
+- 코드 길이와 만료 시간은 팀에서 확정한다.
+- 여행별 활성 초대 코드는 하나로 제한하는 방향을 기본으로 한다.
+- 새 초대 코드 생성 시 이전 활성 코드를 무효화한다.
+- 코드 생성 및 반환은 검증된 처리 계층에서 수행한다.
+- 일반 사용자가 invitations 전체 목록을 읽을 수 없도록 한다.
+
+### 5.2 초대 코드로 여행 참여
+
+입력:
+
+```json
+{
+  "code": "예시초대코드"
+}
+```
+
+처리:
+
+1. 로그인 여부를 확인한다.
+2. 초대 코드가 유효하고 만료되지 않았는지 확인한다.
+3. 연결된 여행이 존재하는지 확인한다.
+4. 이미 참여 중인지 확인한다.
+5. MEMBER 참여 문서를 생성한다.
+6. Trip.memberIds에 uid를 추가한다.
+
+결과 예시:
+
+```json
+{
+  "tripId": "trip_001",
+  "role": "MEMBER",
+  "alreadyJoined": false
+}
+```
+
+규칙:
+
+- 이미 참여 중이면 중복 참여 문서를 만들지 않는다.
+- 이미 참여 중이면 alreadyJoined를 true로 반환한다.
+- members 문서와 memberIds는 원자적으로 변경한다.
+- 초대 코드 검증 없이 사용자가 임의의 여행에 자신을 추가할 수 없다.
+- 다른 사용자의 uid를 대신 추가할 수 없다.
+- 여행별 최대 참여 인원과 코드 입력 시도 제한은 팀에서 확정한다.
+
+### 5.3 참여자 목록 조회
+
+권한:
+
+- 해당 여행 참여자
+
+결과 예시:
+
+```json
+{
+  "tripId": "trip_001",
+  "members": [
+    {
+      "uid": "user_001",
+      "displayName": "사용자 A",
+      "role": "OWNER"
+    },
+    {
+      "uid": "user_002",
+      "displayName": "사용자 B",
+      "role": "MEMBER"
+    }
+  ]
+}
+```
+
+---
+
+## 6. 장소 및 공동 일정 연동
+
+### 6.1 장소 등록
+
+권한:
+
+- 해당 여행 참여자
+
+입력 예시:
+
+```json
+{
+  "tripId": "trip_001",
+  "name": "예시 카페",
+  "address": "서울특별시 예시 주소",
+  "sourceUrl": "https://naver.me/예시링크",
+  "latitude": null,
+  "longitude": null,
+  "memo": "둘째 날 방문 후보"
+}
+```
+
+처리:
+
+- places/{placeId}를 생성한다.
+- sourceUrl이 있으면 sourceType을 LINK로 저장한다.
+- sourceUrl이 없으면 sourceType을 MANUAL로 저장한다.
+- scheduledItemId는 null로 저장한다.
+- version은 1로 저장한다.
+
+결과 예시:
+
+```json
+{
+  "placeId": "place_001",
+  "name": "예시 카페",
+  "address": "서울특별시 예시 주소",
+  "sourceUrl": "https://naver.me/예시링크",
+  "latitude": null,
+  "longitude": null,
+  "memo": "둘째 날 방문 후보",
+  "sourceType": "LINK",
+  "scheduledItemId": null,
+  "version": 1
+}
+```
+
+규칙:
+
+- 장소명은 필수이다.
+- 주소, URL, 좌표는 없는 상태로 저장할 수 있다.
+- 외부 링크에서 장소 정보를 자동 추출하지 않는다.
+- 동일한 장소명이 있어도 자동 병합하지 않는다.
+- 같은 URL의 중복 등록 경고 여부는 팀에서 확정한다.
+
+### 6.2 장소 보관함 조회
+
+조회 경로:
+
+```text
+trips/{tripId}/places
+```
+
+규칙:
+
+- 저장된 순서대로 표시한다.
+- scheduledItemId가 null이면 미배치 장소로 표시한다.
+- scheduledItemId가 있으면 일정에 배치된 장소로 표시한다.
+- 날짜가 정해지지 않은 장소도 보관함에 유지한다.
+- 결과가 없으면 빈 목록과 장소 추가 안내를 표시한다.
+
+### 6.3 장소 수정
+
+입력:
+
+- placeId
+- expectedVersion
+- 변경할 장소명, 주소, URL, 좌표, 메모
+
+규칙:
+
+- 해당 여행 참여자만 수정할 수 있다.
+- expectedVersion을 확인한다.
+- 수정 성공 시 version을 1 증가시킨다.
+- scheduledItemId는 일반 장소 수정으로 변경하지 않는다.
+- 장소 정보 수정은 연결된 일정 화면에도 반영한다.
+
+### 6.4 장소 삭제
+
+규칙:
+
+- 해당 여행 참여자만 삭제할 수 있다.
+- scheduledItemId가 null인 장소만 삭제할 수 있다.
+- 일정에 배치된 장소는 먼저 일정에서 제거해야 한다.
+- 장소 삭제 시 다른 장소나 일정은 변경하지 않는다.
+
+### 6.5 일정에 장소 배치
+
+입력 예시:
+
+```json
+{
+  "tripId": "trip_001",
+  "placeId": "place_001",
+  "visitDate": "2026-10-20",
+  "visitTime": "10:00",
+  "visitOrder": 1,
+  "memo": "오전에 방문",
+  "expectedItineraryVersion": 0
+}
+```
+
+처리:
+
+- scheduleItems/{itemId}를 생성한다.
+- Place.scheduledItemId에 itemId를 저장한다.
+- memoryCount는 0으로 저장한다.
+- 일정 항목 version은 1로 저장한다.
+- Trip.itineraryVersion을 1 증가시킨다.
+- 관련 변경은 원자적으로 수행한다.
+
+규칙:
+
+- placeId는 같은 여행에 속해야 한다.
+- 이미 일정에 배치된 장소는 다시 배치할 수 없다.
+- visitDate는 여행 기간 안에 있어야 한다.
+- visitTime은 null 또는 HH:mm 형식이어야 한다.
+- 해당 날짜의 지정 위치에 삽입하고 뒤 항목의 순서를 조정한다.
+- 날짜별 visitOrder는 1부터 연속되도록 유지한다.
+- expectedItineraryVersion이 다르면 저장을 거절하고 최신 일정을 확인한다.
+
+### 6.6 일정 조회 및 변경 반영
+
+조회 경로:
+
+```text
+trips/{tripId}/scheduleItems
+```
+
+화면에 필요한 결과 예시:
+
+```json
+{
+  "tripId": "trip_001",
+  "itineraryVersion": 1,
   "items": [
     {
       "itemId": "item_001",
-      "candidateId": "cand_001",
+      "placeId": "place_001",
       "visitDate": "2026-10-20",
+      "visitTime": "10:00",
       "visitOrder": 1,
       "memo": "오전에 방문",
+      "memoryCount": 0,
+      "version": 1,
       "place": {
-        "placeId": "place_001",
         "name": "예시 카페",
-        "address": "서울특별시 예시 주소 1",
-        "latitude": 37.5,
-        "longitude": 127.0
-      }
-    },
-    {
-      "itemId": "item_002",
-      "candidateId": "cand_002",
-      "visitDate": "2026-10-20",
-      "visitOrder": 2,
-      "memo": "",
-      "place": {
-        "placeId": "place_003",
-        "name": "예시 공원",
-        "address": "서울특별시 예시 주소 3",
-        "latitude": 37.51,
-        "longitude": 127.01
+        "address": "서울특별시 예시 주소",
+        "sourceUrl": "https://naver.me/예시링크",
+        "latitude": null,
+        "longitude": null
       }
     }
   ]
 }
 ```
 
-#### 응답 필드
+위 결과는 ScheduleItem과 Place를 조합한 앱 표시용 모델이다.
+place 객체를 일정 문서에 중복 저장한다는 의미는 아니다.
 
-| 필드 | 타입 | 설명 |
-|---|---|---|
-| tripId | string | 여행 ID |
-| title | string | 여행 제목 |
-| startDate | string | 여행 시작일 |
-| endDate | string | 여행 종료일 |
-| items | array | 저장된 일정 항목 목록 |
-| items[].itemId | string | 일정 항목 ID |
-| items[].candidateId | string | 방문 후보 ID |
-| items[].visitDate | string | 방문 날짜 |
-| items[].visitOrder | integer | 해당 날짜의 방문 순서 |
-| items[].memo | string | 사용자 메모 |
-| items[].place | object | 일정에 포함된 장소 정보 |
-| items[].place.placeId | string | 장소 ID |
-| items[].place.name | string | 장소명 |
-| items[].place.address | string | 주소 |
-| items[].place.latitude | number | 위도 |
-| items[].place.longitude | number | 경도 |
+규칙:
 
-#### 처리 규칙
+- visitDate, visitOrder 순서로 표시한다.
+- 참여자의 변경을 구독하여 화면에 반영한다.
+- 실시간 반영과 동시 수정 충돌 처리는 별도로 구현한다.
+- 화면을 벗어나면 불필요한 데이터 구독을 종료한다.
+- 일정이 없으면 빈 목록을 표시한다.
 
-- 일정은 visitDate 오름차순, visitOrder 오름차순으로 반환한다.
-- 저장된 일정이 없으면 items를 빈 배열로 반환한다.
-- 일정이 없는 경우도 정상 조회이므로 200 OK를 반환한다.
-- 앱은 visitDate를 기준으로 일정을 날짜별로 나누어 표시한다.
-- 앱은 장소의 latitude, longitude를 이용하여 지도 마커를 표시한다.
-- 앱은 같은 날짜의 장소를 visitOrder 순서대로 연결할 수 있다.
-- 이 응답은 실제 도로 경로, 이동 거리, 이동 소요시간을 제공하지 않는다.
-- 실제 도로 경로와 이동 소요시간이 필요하면 별도의 경로 조회 기능을 설계한다.
+### 6.7 일정 시간 및 메모 수정
 
-### 5.8 일정 항목 메모 수정
-
-저장된 일정 항목의 사용자 메모를 수정한다.
-
-날짜 변경, 방문 순서 변경, 일정 항목 추가 및 제거는
-일정 전체 저장 API를 사용한다.
-
-- Method: PATCH
-- URL: /api/v1/trips/{tripId}/itinerary-items/{itemId}
-- 인증 필요 여부: 미정
-
-#### Path Parameter
-
-| 필드 | 타입 | 필수 여부 | 설명 |
-|---|---|---|---|
-| tripId | string | 필수 | 여행 ID |
-| itemId | string | 필수 | 수정할 일정 항목 ID |
-
-#### 요청 Body
-
-```json
-{
-  "memo": "점심 식사 후 방문하기"
-}
-```
-
-#### 요청 필드
-
-| 필드 | 타입 | 필수 여부 | 설명 |
-|---|---|---|---|
-| memo | string | 필수 | 변경할 메모. 빈 문자열이면 메모를 비운다 |
-
-#### 성공 응답
-
-HTTP 상태: 200 OK
+입력 예시:
 
 ```json
 {
   "itemId": "item_001",
-  "candidateId": "cand_001",
-  "visitDate": "2026-10-20",
-  "visitOrder": 1,
-  "memo": "점심 식사 후 방문하기"
+  "expectedVersion": 1,
+  "visitTime": "11:00",
+  "memo": "점심 전에 방문"
 }
 ```
 
-#### 오류 응답 — 일정 항목 없음
+규칙:
 
-HTTP 상태: 404 Not Found
+- 해당 여행 참여자만 수정할 수 있다.
+- 입력한 필드만 변경한다.
+- visitTime에 null을 보내면 시간을 비운다.
+- memo에 빈 문자열을 보내면 메모를 비운다.
+- expectedVersion이 다르면 최신 내용을 확인하도록 안내한다.
+- 성공 시 일정 항목 version과 itineraryVersion을 증가시킨다.
+
+### 6.8 일정 날짜 및 순서 변경
+
+입력 예시:
 
 ```json
 {
-  "error": {
-    "code": "ITINERARY_ITEM_NOT_FOUND",
-    "message": "일정 항목을 찾을 수 없습니다."
-  }
+  "tripId": "trip_001",
+  "expectedItineraryVersion": 3,
+  "moves": [
+    {
+      "itemId": "item_001",
+      "visitDate": "2026-10-21",
+      "visitOrder": 1
+    }
+  ]
 }
 ```
 
-#### 처리 규칙
+규칙:
 
-- itemId는 요청한 tripId의 일정에 속해야 한다.
-- memo 필드를 생략하거나 null로 보내면 오류를 반환한다.
-- memo가 빈 문자열이면 기존 메모를 비운다.
-- 방문 날짜와 방문 순서는 변경하지 않는다.
-- 날짜 및 순서 변경은 일정 전체 저장 API를 사용한다.
+- moves는 이동할 항목과 이동할 최종 위치를 나타낸다.
+- 이동하지 않는 일정 항목은 삭제하지 않는다.
+- 이동 전후 날짜의 전체 순서를 재정렬한다.
+- 날짜별 순서는 1부터 연속되도록 유지한다.
+- 여러 항목을 이동할 때 같은 최종 위치를 중복 지정할 수 없다.
+- 날짜는 여행 기간 안에 있어야 한다.
+- expectedItineraryVersion이 일치해야 한다.
+- 관련 일정 항목 변경과 itineraryVersion 증가는 원자적으로 처리한다.
+- 시간은 자동 변경하지 않는다.
+- 시간 변경이 필요한 경우 별도로 수정한다.
 
-## 6. 공통 오류 응답
+### 6.9 일정 항목 제거
 
-모든 API의 오류 응답은 아래 구조를 사용한다.
+규칙:
+
+- 해당 여행 참여자만 제거할 수 있다.
+- 연결된 여행 기록이 있으면 제거를 거절한다.
+- 여행 기록을 먼저 삭제한 후 일정에서 제거할 수 있다.
+- 일정 항목을 제거해도 Place는 보관함에 유지한다.
+- Place.scheduledItemId를 null로 변경한다.
+- 같은 날짜의 남은 방문 순서를 재정렬한다.
+- itineraryVersion을 증가시킨다.
+- 제거와 순서 변경은 원자적으로 처리한다.
+
+---
+
+## 7. 여행 기록, 공유 및 로컬 캐시
+
+### 7.1 사진 및 후기 등록
+
+권한:
+
+- 해당 여행 참여자
+
+등록 데이터 예시:
 
 ```json
 {
-  "error": {
-    "code": "INVALID_REQUEST",
-    "message": "요청 내용을 확인해 주세요.",
-    "field": "title"
-  }
+  "itemId": "item_001",
+  "review": "분위기가 좋고 쉬어가기 좋았다.",
+  "photos": [
+    {
+      "photoId": "photo_001",
+      "storagePath": "trips/trip_001/items/item_001/memories/memory_001/photo_001",
+      "contentType": "image/jpeg",
+      "sizeBytes": 1250000,
+      "order": 1
+    }
+  ]
 }
 ```
 
-| 필드 | 타입 | 설명 |
+처리 순서:
+
+1. 기록 ID와 사진 ID를 준비한다.
+2. Photo Picker로 사진을 선택한다.
+3. 사진 파일을 검증하고 필요한 경우 크기를 조정한다.
+4. Firebase Storage에 업로드한다.
+5. 업로드 성공 후 Memory 문서를 생성한다.
+6. ScheduleItem.memoryCount를 증가시킨다.
+
+규칙:
+
+- 후기가 있거나 사진이 한 장 이상 있어야 한다.
+- 사진만 있는 기록은 review를 빈 문자열로 저장한다.
+- 후기만 있는 기록은 photos를 빈 배열로 저장한다.
+- 사진 선택 취소는 오류로 처리하지 않는다.
+- 모든 사진 업로드가 끝난 뒤 기록 저장 완료를 표시한다.
+- 문서 저장 실패 시 새로 업로드한 파일을 정리하거나 재시도 대상으로 관리한다.
+- 재시도 시 같은 memoryId와 photoId를 사용하여 중복 생성을 방지한다.
+- 파일 크기, 장수, 지원 형식은 팀에서 확정한다.
+- 실패한 업로드나 임시 파일의 정리 방식을 구현 전에 정한다.
+
+### 7.2 기록 조회
+
+조회 경로:
+
+```text
+trips/{tripId}/scheduleItems/{itemId}/memories
+```
+
+규칙:
+
+- 해당 여행 참여자만 조회할 수 있다.
+- 생성 시각순으로 표시한다.
+- 사진은 order 순서로 표시한다.
+- 사진은 Storage 접근 권한을 적용하여 불러온다.
+- 영구 공개 URL을 기본 접근 방식으로 사용하지 않는다.
+- 기록이 없으면 빈 목록을 표시한다.
+
+### 7.3 기록 수정
+
+권한:
+
+- 기록 작성자 또는 OWNER
+
+입력:
+
+- memoryId
+- expectedVersion
+- 변경할 후기
+- 최종 사진 목록
+
+규칙:
+
+- expectedVersion을 확인한다.
+- 새 사진은 업로드 완료 후 문서에 연결한다.
+- 문서 변경 성공 후 제거된 사진 파일을 정리한다.
+- 후기와 사진이 모두 없어지는 수정은 거절한다.
+- 기록을 완전히 비우려면 기록 삭제 기능을 사용한다.
+- 파일 정리에 실패하면 재시도 상태를 관리한다.
+
+### 7.4 기록 삭제
+
+권한:
+
+- 기록 작성자 또는 OWNER
+
+규칙:
+
+- Memory 문서 삭제와 memoryCount 감소는 원자적으로 처리한다.
+- 연결된 사진 파일도 삭제 대상으로 관리한다.
+- Firestore와 Storage의 변경을 하나의 원자적 작업으로 가정하지 않는다.
+- 파일 삭제 실패 시 재시도할 수 있도록 한다.
+- 기록 삭제가 일정 항목 삭제로 이어지지는 않는다.
+
+### 7.5 날짜별 일정 텍스트 공유
+
+입력:
+
+- tripId
+- 공유할 날짜
+
+출력 예시:
+
+```text
+[서울 여행 / 2026-10-20]
+
+1. 10:00 예시 카페
+   메모: 오전에 방문
+
+2. 시간 미정 · 예시 공원
+```
+
+규칙:
+
+- 조회한 일정으로 앱에서 공유 텍스트를 생성한다.
+- Android 시스템 공유 기능으로 전달한다.
+- 별도 서버 API는 필수로 만들지 않는다.
+- 시간 미지정 항목은 시간 미정으로 표시한다.
+- 일정은 visitOrder 순서로 출력한다.
+- 캐시 데이터로 공유할 경우 최신 상태가 아닐 수 있음을 표시한다.
+- 사진, 비공개 초대 코드, 사용자 개인정보는 기본 공유 내용에 넣지 않는다.
+
+### 7.6 Room 읽기용 캐시
+
+캐시 대상:
+
+- 최근 조회한 여행
+- 참여 정보
+- 장소 보관함
+- 일정 항목
+
+규칙:
+
+- 클라우드 데이터를 공동 편집의 기준으로 사용한다.
+- Room은 읽기용 캐시로 사용한다.
+- 캐시 데이터는 사용자 uid별로 분리한다.
+- 저장 시 마지막 동기화 시각을 기록한다.
+- 오프라인에서는 캐시와 마지막 동기화 시각을 표시한다.
+- 현재 MVP에서는 오프라인 편집을 제공하지 않는다.
+- 오프라인 상태에서는 클라우드 변경 작업을 비활성화한다.
+- 네트워크가 연결되어 있어도 저장 완료는 서버 반영 확인 후 표시한다.
+- 접근 권한이 사라진 여행은 해당 캐시를 제거한다.
+- 로그아웃 시 해당 사용자의 캐시를 제거한다.
+
+### 7.7 선택 기능: 지도 및 원본 링크
+
+- 좌표가 있으면 지도에 장소를 표시할 수 있다.
+- 단순 장소 연결선과 실제 도로 경로를 구분한다.
+- 실제 이동 거리와 소요시간은 현재 필수 범위에 포함하지 않는다.
+- 좌표가 없고 sourceUrl이 있으면 원본 링크를 연다.
+- 지도 앱 딥링크를 추가하는 경우 지원 형식과 설치되지 않은 경우의 동작을 별도로 정의한다.
+
+---
+
+## 8. 접근 권한, 오류, 검증 및 미확정 사항
+
+### 8.1 접근 권한
+
+| 작업 | OWNER | MEMBER | 비참여자 |
+|---|---|---|---|
+| 여행 조회 | 가능 | 가능 | 불가 |
+| 여행 기본 정보 수정 | 가능 | 불가 | 불가 |
+| 초대 코드 생성 | 가능 | 불가 | 불가 |
+| 참여자 조회 | 가능 | 가능 | 불가 |
+| 장소 등록·수정·삭제 | 가능 | 가능 | 불가 |
+| 일정 등록·수정·제거 | 가능 | 가능 | 불가 |
+| 기록 조회·등록 | 가능 | 가능 | 불가 |
+| 다른 사용자의 기록 수정·삭제 | 가능 | 불가 | 불가 |
+| 자신의 기록 수정·삭제 | 가능 | 가능 | 불가 |
+| 사진 조회 | 가능 | 가능 | 불가 |
+
+권한 규칙은 Firestore와 Storage에 각각 적용한다.
+
+화면에서 버튼을 숨기는 것만으로 접근 제어를 구현하지 않는다.
+
+### 8.2 데이터 변경 제한
+
+- 일반 사용자는 ownerId를 변경할 수 없다.
+- 일반 여행 수정으로 memberIds를 변경할 수 없다.
+- 유효한 초대 절차 없이 members 문서를 생성할 수 없다.
+- 일반 장소 수정으로 scheduledItemId를 변경할 수 없다.
+- 일반 일정 수정으로 memoryCount를 변경할 수 없다.
+- createdBy와 createdAt을 임의로 바꿀 수 없다.
+- 다른 여행의 placeId나 itemId를 연결할 수 없다.
+- 보안 규칙에서 허용하는 필드와 타입을 제한한다.
+- 특권 처리 계층에서도 인증, 역할, 입력값을 별도로 검증한다.
+
+### 8.3 동시 수정 충돌
+
+- 단일 문서 수정은 version을 확인한다.
+- 일정 구성 변경은 itineraryVersion을 확인한다.
+- 읽은 버전과 현재 버전이 다르면 덮어쓰지 않는다.
+- 충돌 시 최신 데이터를 다시 보여주고 재수정하도록 안내한다.
+- 관련 여러 문서의 변경은 트랜잭션 또는 원자적 쓰기로 처리한다.
+- 실시간 구독만으로 충돌 처리가 완료되었다고 판단하지 않는다.
+
+### 8.4 앱 내부 오류 모델
+
+Firebase 등의 오류를 화면에서 일관되게 처리하기 위해
+앱 내부에서 아래 구조로 변환한다.
+
+이 구조는 HTTP 응답 형식을 의미하지 않는다.
+
+```json
+{
+  "code": "EDIT_CONFLICT",
+  "message": "다른 참여자가 먼저 수정했습니다. 최신 내용을 확인해 주세요.",
+  "field": null,
+  "retryable": false
+}
+```
+
+| 코드 | 의미 | 사용자 안내 |
 |---|---|---|
-| error.code | string | 앱에서 오류를 구분하기 위한 코드 |
-| error.message | string | 사용자에게 표시할 수 있는 오류 설명 |
-| error.field | string | 오류가 발생한 요청 필드. 특정 필드와 관계없으면 생략 |
+| AUTH_REQUIRED | 로그인 필요 | 로그인 후 다시 시도 |
+| ACCESS_DENIED | 권한 없음 | 접근 권한 확인 |
+| INVALID_INPUT | 입력값 오류 | 해당 입력값 수정 |
+| TRIP_NOT_FOUND | 여행 없음 | 목록 새로고침 |
+| PLACE_NOT_FOUND | 장소 없음 | 장소 목록 새로고침 |
+| ITEM_NOT_FOUND | 일정 없음 | 일정 새로고침 |
+| MEMORY_NOT_FOUND | 기록 없음 | 기록 목록 새로고침 |
+| INVALID_INVITATION | 초대 코드 오류 | 코드 확인 |
+| INVITATION_EXPIRED | 초대 만료 | 새 코드 요청 |
+| EDIT_CONFLICT | 동시 수정 충돌 | 최신 내용 확인 후 재수정 |
+| DATE_OUT_OF_RANGE | 여행 기간 밖 일정 | 날짜 수정 |
+| PLACE_ALREADY_SCHEDULED | 이미 배치된 장소 | 기존 일정 확인 |
+| PLACE_IN_USE | 일정에 연결된 장소 | 일정에서 먼저 제거 |
+| ITEM_HAS_MEMORIES | 기록이 연결된 일정 | 기록 먼저 삭제 |
+| INVALID_PHOTO | 지원하지 않는 사진 | 다른 사진 선택 |
+| UPLOAD_FAILED | 사진 업로드 실패 | 재시도 |
+| NETWORK_ERROR | 네트워크 오류 | 연결 확인 |
+| INTERNAL_ERROR | 예상하지 못한 오류 | 잠시 후 재시도 |
 
-앱은 error.message 문구가 아닌 error.code를 기준으로
-오류 유형을 구분한다.
+- retryable은 실제 실패 상황에 따라 결정한다.
+- 오류 메시지 문구 대신 code로 오류 유형을 구분한다.
+- 내부 오류 세부 정보나 개인정보를 사용자 메시지에 노출하지 않는다.
 
-### 공통 오류 목록
+### 8.5 필수 검증 시나리오
 
-| HTTP 상태 | 코드 | 설명 |
+| 번호 | 시나리오 | 완료 기준 |
 |---|---|---|
-| 400 | INVALID_REQUEST | 필수값 누락 또는 잘못된 요청 |
-| 400 | INVALID_DATE_FORMAT | 잘못된 날짜 형식 또는 존재하지 않는 날짜 |
-| 400 | INVALID_TRIP_DATE_RANGE | 종료일이 시작일보다 빠름 |
-| 400 | UNSUPPORTED_SHARE_URL | 지원하지 않는 공유 링크 |
-| 400 | EMPTY_PLACE_SELECTION | 선택한 장소가 없음 |
-| 401 | UNAUTHORIZED | 인증 정보가 없거나 유효하지 않음 |
-| 403 | ACCESS_DENIED | 요청한 자원에 접근할 권한이 없음 |
-| 404 | TRIP_NOT_FOUND | 여행을 찾을 수 없음 |
-| 404 | IMPORT_NOT_FOUND | 분석 작업을 찾을 수 없음 |
-| 404 | CANDIDATE_NOT_FOUND | 방문 후보를 찾을 수 없음 |
-| 404 | ITINERARY_ITEM_NOT_FOUND | 일정 항목을 찾을 수 없음 |
-| 409 | IMPORT_NOT_COMPLETED | 링크 분석이 완료되지 않음 |
-| 409 | DUPLICATE_VISIT_ORDER | 같은 날짜에 방문 순서가 중복됨 |
-| 422 | PLACE_NOT_SELECTABLE | 정보가 불완전하여 선택할 수 없는 장소 |
-| 422 | VISIT_DATE_OUT_OF_RANGE | 방문 날짜가 여행 기간을 벗어남 |
-| 422 | INVALID_VISIT_ORDER | 방문 순서가 1부터 연속되지 않음 |
-| 422 | DUPLICATE_SCHEDULED_CANDIDATE | 같은 후보가 일정에 여러 번 포함됨 |
-| 500 | INTERNAL_SERVER_ERROR | 서버 내부 오류 |
+| 1 | 여행 생성 | 이름·기간·지역과 OWNER가 함께 저장됨 |
+| 2 | 다른 계정 초대 | 두 기기에서 같은 여행을 조회함 |
+| 3 | 잘못된 초대 코드 | 참여가 거절됨 |
+| 4 | 링크 장소 등록 | 원본 URL과 사용자 입력 장소명이 저장됨 |
+| 5 | 직접 장소 등록 | URL과 좌표 없이 저장됨 |
+| 6 | 장소 3개 일정 배치 | 2일 일정으로 나누어 표시됨 |
+| 7 | 일정 날짜·순서 변경 | 다른 기기에도 일관되게 반영됨 |
+| 8 | 같은 항목 동시 수정 | 오래된 버전의 변경이 조용히 덮어쓰지 않음 |
+| 9 | 사진과 후기 등록 | 일정에 연결되어 다른 참여자가 조회함 |
+| 10 | 사진 선택 취소 | 기존 화면과 데이터가 유지됨 |
+| 11 | 사진 업로드 실패 | 완료로 표시하지 않고 재시도 가능 |
+| 12 | 기록이 있는 일정 제거 | 삭제가 거절됨 |
+| 13 | 일정 텍스트 공유 | 날짜·시간·순서가 반영된 텍스트가 생성됨 |
+| 14 | 비참여자 접근 | Firestore 및 Storage 접근이 거절됨 |
+| 15 | 오프라인 조회 | 캐시와 마지막 동기화 시각이 표시됨 |
+| 16 | 로그아웃 | 해당 사용자 캐시와 화면 상태가 제거됨 |
 
-인증 관련 오류는 인증 방식 확정 후 적용한다.
+### 8.6 구현 전 확정할 사항
 
-### 비동기 분석 실패와 조회 오류 구분
+| 항목 | 현재 상태 |
+|---|---|
+| 로그인 제공 방식 | 미정 |
+| XML 또는 Jetpack Compose | 미정 |
+| 문서의 입력 길이 제한 | 제안값 검토 필요 |
+| 여행별 최대 참여 인원 | 미정 |
+| 초대 코드 길이·만료 시간·시도 제한 | 미정 |
+| 초대 처리 계층 | Cloud Functions 등 사용 여부 결정 필요 |
+| 사진 최대 장수·크기·지원 형식 | 미정 |
+| 사진 및 임시 업로드 정리 방식 | 미정 |
+| 참여자의 기록 편집 권한 | 작성자 또는 OWNER라는 초안 검토 필요 |
+| 같은 장소 반복 방문 | 현재 초안은 불가 |
+| 여행 탈퇴·강제 퇴장·삭제 | MVP 포함 여부 결정 필요 |
+| 최대 장소·일정 수와 일괄 변경 범위 | 미정 |
+| 지도 또는 GIF 중 선택 기능 | 필수 기능 완료 후 결정 |
 
-- 분석 작업을 정상적으로 조회했으면 HTTP 상태는 200이다.
-- 조회된 분석 작업이 실패한 경우 응답의 status는 FAILED이다.
-- 이 경우 응답 안의 error에 분석 실패 이유를 제공한다.
-- 분석 작업 자체가 존재하지 않으면 HTTP 상태는 404이다.
-- SHARE_LINK_UNAVAILABLE은 분석 작업 실패 시 사용하는 코드이다.
+### 8.7 초안 완료 기준
 
-## 7. 공통 데이터 및 처리 규칙
+본 문서는 다음 흐름을 개발하기 위한 데이터 연동 초안이다.
 
-### 데이터 형식
+여행 생성
+→ 초대 코드로 동행자 참여
+→ 장소 링크 또는 직접 입력
+→ 날짜·시간·순서 지정
+→ 공동 일정 수정
+→ 사진 및 후기 작성
+→ 일정 텍스트 공유
 
-- 요청과 응답은 JSON을 사용한다.
-- JSON 필드 이름은 camelCase를 사용한다.
-- 날짜는 YYYY-MM-DD 형식을 사용한다.
-- 날짜에는 시각 및 시간대 정보를 포함하지 않는다.
-- 모든 ID는 문자열로 전달한다.
-- 앱은 ID의 내부 형식이나 접두어에 의존하지 않는다.
-- 위도와 경도는 숫자로 전달한다.
-- 위도는 -90 이상 90 이하, 경도는 -180 이상 180 이하이다.
-- 배열에 결과가 없으면 null 대신 빈 배열을 반환한다.
-
-### 기본 범위
-
-- 현재 초안은 한 번의 요청으로 전체 후보 및 일정을 조회한다.
-- 페이지 나누기는 현재 범위에 포함하지 않는다.
-- 현재 초안은 같은 후보의 반복 방문을 허용하지 않는다.
-- 현재 초안은 한 사용자가 일정을 편집하는 흐름을 기준으로 한다.
-- 공동 편집과 동시 수정 충돌 처리는 별도로 설계한다.
-
-### 저장 규칙
-
-- 방문 후보 저장과 일정 저장은 구분한다.
-- 일정에서 장소를 제거해도 방문 후보는 유지한다.
-- 일정 전체 저장은 한 번에 성공하거나 한 번에 실패해야 한다.
-- 여행, 분석 작업, 방문 후보, 일정 항목에 대한 접근 권한은
-  인증 설계 시 함께 정의한다.
-
-### 예시 데이터
-
-- 문서의 ID, 장소명, 주소, 좌표는 설명용 가상 데이터이다.
-- 문서의 URL은 우리 서비스의 API 경로이다.
-- 외부 지도 서비스가 제공하는 API 주소를 의미하지 않는다.
-
-  
-## 8. 미확정 사항
-
-### 공유 링크 분석
-
-- 지원할 지도 서비스
-- 단일 장소 링크 지원 여부
-- 저장 폴더 공유 링크 지원 여부
-- 실제 공유 링크에서 장소명, 주소, 좌표를 추출할 수 있는지
-- 비공개, 만료, 접근 제한 링크 처리
-- 분석 작업의 최대 대기 시간 및 결과 보관 기간
-- 장소 ID가 없는 경우의 중복 판별 기준
-- 주소 및 좌표 누락 시 보완 방식
-
-### 여행 및 일정
-
-- 날짜를 정하지 않은 여행 생성 허용 여부
-- 여행 제목 및 메모의 최대 길이
-- 여행별 후보 및 일정 항목 최대 개수
-- 같은 장소의 반복 방문 허용 여부
-- 방문 후보 삭제 기능
-- 여행 목록 조회, 여행 정보 수정 및 여행 삭제 기능
-- 로그인 및 인증 방식
-- 사용자별 데이터 접근 권한
-
-## 9. AI P.S. 연동 범위
-
-AI 팁은 일정 저장 이후 별도 작업으로 생성하는 방향을 검토한다.
-
-### 생성할 정보
-
-- 예상 소요시간
-- 추천 방문 시간대
-- 주차 관련 팁
-- 입장료 관련 팁
-
-### 설계 원칙
-
-- AI 팁 생성 실패로 일정 저장이 실패하지 않아야 한다.
-- 생성 대기, 생성 중, 완료, 실패 상태를 구분한다.
-- 확인되지 않은 주차 및 입장료 정보를 확정 정보로 표시하지 않는다.
-- 정보가 없으면 임의로 생성하지 않고 미확인 상태로 표시한다.
-- 추정 정보와 출처로 확인한 정보를 구분한다.
-- 사실 정보의 출처와 확인 시점을 저장하는 방식을 정한다.
-- 팁의 재사용 기간과 재생성 조건을 정한다.
-
-### 후속 명세 항목
-
-- AI 팁 조회 방식
-- 최초 생성 시점
-- 생성 실패 후 재시도 방식
-- 응답 필드 및 출처 형식
-
-AI P.S.는 필수 MVP 기능이므로 개발 시작 전 후속 명세를 확정한다.
-
-## 10. 지도 표시 및 길찾기 연동 범위
-
-### 지도 표시
-
-- 일정 조회 응답의 위도와 경도를 사용하여 마커를 표시한다.
-- 같은 날짜의 장소를 방문 순서대로 연결한다.
-- 단순 연결선과 실제 도로 이동 경로를 구분한다.
-- 실제 이동 경로 및 소요시간 제공 여부는 별도로 결정한다.
-
-### 외부 지도 앱 길찾기
-
-- 일정 카드에서 네이버 지도 또는 카카오맵 길찾기를 실행한다.
-- 목적지 정보는 일정 조회 응답의 장소명과 좌표를 사용한다.
-- 현재 위치 접근 및 지도 앱 실행 처리는 앱에서 담당한다.
-- 외부 지도 앱이 설치되지 않은 경우의 동작을 정한다.
-- 딥링크 형식과 지원 환경은 구현 시 공식 문서로 확인한다.
-- 기본 설계에서는 길찾기 실행을 위한 별도 서버 API를 만들지 않는다.
-
-## 11. 별도 검토 기능
-
-- 사진 업로드
-- 백그라운드 GIF 앨범 생성
-- GIF 생성 상태 조회 및 결과 다운로드
-
-GIF 앨범은 회의 후 구현 범위와 API를 별도로 정의한다.
-
+실제 구현 완료 여부는 두 계정·두 기기에서 위 흐름을 수행하고,
+접근 권한 및 오류 시나리오를 검증한 후 판단한다.
